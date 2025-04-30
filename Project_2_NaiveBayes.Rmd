@@ -1,0 +1,317 @@
+---
+title: "Naive Bayes"
+output:
+  html_document:
+    df_print: paged
+---
+
+Step 1: SET DIRECTORY
+```{r}
+setwd("/Users/atakemma/Emma/BU_MET/BLOG ARTICLE/AD699 Data Mining for Business Analytics/Modules/Projects/Project_2")
+```
+
+
+Step 2: LIBRARIES
+```{r}
+library(ggplot2)
+library(tidyverse)
+library(e1071)
+library(caret)
+```
+
+Step 3: LOAD DATA
+```{r}
+movies <- read.csv(file = "movie_awards.csv")
+```
+
+
+STEP 4: EXPLORING THE DATA SET
+
+a. Ignoring Title and Year
+Question: Why would these two variables not be useful in predicting whether a movie would win an award?
+Answer: 
+- The title would not be helpful because each movie has a unique title and if it were to be a categorical variable, each movie would be in its own category. This isn't particularly useful for making predictions about whether a movie won an award. 
+- The year isn't particularly useful either because the year when a movie was released doesn't really give much indication as to whether the movie won an award, but is more of an index as to when the movie was released. 
+
+
+b. Missing Values
+```{r}
+# Function to count empty strings in each column of a data frame
+count_empty_strings <- function(df) {
+  sapply(df, function(column) sum(column == "", na.rm = TRUE))
+}
+
+# Count empty strings in each column
+empty_string_counts <- count_empty_strings(movies)
+print("Empty string counts in each column:")
+print(empty_string_counts)
+
+# Sum of empty strings across all columns
+total_empty_strings <- sum(empty_string_counts)
+print(paste("Total empty strings in the data frame:", total_empty_strings))
+```
+There are no empty cells.
+
+```{r}
+# Function to count NA values in each column of a data frame
+count_na_values <- function(df) {
+  sapply(df, function(column) sum(is.na(column)))
+}
+
+# Count NA values in each column
+na_counts <- count_na_values(movies)
+print("NA counts in each column:")
+print(na_counts)
+
+# Sum of NA values across all columns
+total_na_values <- sum(na_counts)
+print(paste("Total NA values in the data frame:", total_na_values))
+```
+ There are no Na values.
+
+
+c. Call the str() Function on the Data Set
+```{r}
+str(movies)
+```
+The Rating, Awards, and Distribution are all character variables.
+
+d. Converting to categorical (factor)
+```{r}
+movies$Rating <- factor(movies$Rating)
+movies$Awards <- factor(movies$Awards)
+movies$Distribution <- factor(movies$Distribution)
+str(movies)
+```
+These variables are now factors
+
+
+QUESTION: Equal Width Binning vs Equal Frequency Bins
+ANSWER: Equal width binning means that the range of values is equally divided into equal lengths, and then the frequency of each bin is tallied. This does not necessarily mean that the frequency is roughly the same in each bin. This can be problematic when there are very few observations near the minimum and maximum ends of the range. If one of the bins has a very small frequency, it is challenging for models to use that bin appropriately. It's better to have equal frequency bins instead.
+
+Example
+```{r}
+summary(movies$Runtime)
+219-38 # range = 181 minutes
+181/5 # interval = 36.2 minutes
+equal_width_runtime = seq(from = 38, to = 219, by = 36.2)
+table(cut(movies$Runtime, breaks = equal_width_runtime, include.lowest = TRUE))
+```
+
+The bins are not of equal size for runtime, therefore this can be challenging when doing our analysis. I'll bin all 3 into factors with 5 equal frequency bins.
+
+
+e. Creating Equal Frequency bins for "Runtime", "Critic.Score", "Box.Office"
+```{r}
+num_bins <- 5
+bins_runtime <- quantile(movies$Runtime, probs = seq(0,1,1/num_bins))
+bins_critic <- quantile(movies$Critic.Score, probs = seq(0,1,1/num_bins))
+bins_boxoffice <- quantile(movies$Box.Office, probs = seq(0,1,1/num_bins))
+
+movies$runtime_bins <- cut(movies$Runtime, breaks = bins_runtime, include.lowest = TRUE)
+movies$critic_bins <- cut(movies$Critic.Score, breaks = bins_critic, include.lowest = TRUE)
+movies$boxoffice_bins <- cut(movies$Box.Office, breaks = bins_boxoffice, include.lowest = TRUE)
+
+# Remove the original Runtime, Critic Score, and Box Office variables
+movies <- select(movies, -c("Runtime","Critic.Score","Box.Office"))
+
+table(movies$runtime_bins)
+table(movies$critic_bins)
+table(movies$boxoffice_bins)
+```
+Now, all those variables have 5 equal frequency bins.
+
+f. Bar plots for the frequency in each bin for all 3 variables
+```{r}
+# Plot for Movie Runtime
+ggplot(movies, aes(x=runtime_bins, fill=runtime_bins)) + 
+  geom_bar() + 
+  ggtitle("Equal Frequency Bins for Movie Runtime") +
+  xlab("Bin") +
+  ylab("Frequency") +
+  scale_fill_brewer(palette = "Set3") # Using a color palette for better visuals
+
+# Plot for Critic Score
+ggplot(movies, aes(x=critic_bins, fill=critic_bins)) + 
+  geom_bar() + 
+  ggtitle("Equal Frequency Bins for Critic Score") +
+  xlab("Bin") +
+  ylab("Frequency") +
+  scale_fill_brewer(palette = "Set2") # Using a different color palette
+
+# Plot for Box Office
+ggplot(movies, aes(x=boxoffice_bins, fill=boxoffice_bins)) + 
+  geom_bar() + 
+  ggtitle("Equal Frequency Bins for Box Office") +
+  xlab("Bin") +
+  ylab("Frequency") +
+  scale_fill_brewer(palette = "Set1") # Using another color palette
+
+```
+
+
+STEP 5: SUPERVISED LEARNING — Naive Bayes and Naive Rule
+
+a. Partition(split) the data set into training and validation
+```{r}
+set.seed(54321) # Can change the seed to whatever number we want
+
+n <- nrow(movies) # total sample size
+n_train <- round(n * 0.60) # training data will be 60% of the total sample size. Round to ensure this is an integer
+
+movies_partition <- sample_n(movies, n)
+movies_training <- slice(movies_partition, 1:n_train)
+movies_validation <- slice(movies_partition, (n_train + 1):n)
+
+# Print statements to show the number of samples and percentages
+cat("Total number of samples:", n, "\n")
+cat("Number of training samples:", n_train, "(", round((n_train / n) * 100, 2), "%)\n")
+cat("Number of validation samples:", n - n_train, "(", round(((n - n_train) / n) * 100, 2), "%)\n")
+```
+
+b. Proportional Bar Plot for Awards by Movie Rating
+```{r}
+ggplot(data = movies_training, aes(x=Rating, fill = Awards)) + geom_bar( position = "fill") +
+  labs(title = "Proportional Bar Plot for Awards by Movie Rating") +
+  xlab("Rating") + ylab("Proportion") 
+```
+
+c. Proportional Bar Plot for Awards by Distribution
+```{r}
+ggplot(data = movies_training, aes(x=Distribution, fill = Awards)) + geom_bar( position = "fill") +
+  labs(title = "Proportional Bar Plot for Awards by Distribution") +
+  xlab("Distribution") + ylab("Proportion") 
+```
+
+d. Proportional Bar Plot for Awards by Run Time
+```{r}
+ggplot(data = movies_training, aes(x=runtime_bins, fill = Awards)) + geom_bar( position = "fill") +
+  labs(title = "Proportional Bar Plot for Awards by Run Time") +
+  xlab("Run Time") + ylab("Proportion") 
+```
+
+e. Proportional Bar Plot for Awards by Critic Score
+```{r}
+ggplot(data = movies_training, aes(x=critic_bins, fill = Awards)) + geom_bar( position = "fill") +
+  labs(title = "Proportional Bar Plot for Awards by Critic Score") +
+  xlab("Critic Score") + ylab("Proportion") 
+```
+
+f. Proportional Bar Plot for Awards by Box Office Earnings
+```{r}
+ggplot(data = movies_training, aes(x=boxoffice_bins, fill = Awards)) + geom_bar( position = "fill") +
+  labs(title = "Proportional Bar Plot for Awards by Box Office Earnings") +
+  xlab("Boxoffice Earnings") + ylab("Proportion") 
+```
+It looks like the Movie Rating has the least impact on whether a movie will win an award since the proportions of award and no award for each rating are pretty much equal across all ratings. We'll drop this from the dataset. The frequency of awards is quite different for different levels of the other variables. For example, movies with low critic scores win less awards, while movies with high critic scores win more awards.
+
+STEP 6: VARIABLE SELECTION
+
+a. Creating data sets "movies_training_reduced" and "movies_validation_reduced" without "Rating"
+```{r}
+# Remove the "Rating" column from both training and validation data sets
+movies_training_reduced <- select(movies_training, -c("Rating"))
+movies_validation_reduced <- select(movies_validation, -c("Rating"))
+
+# Print the first few rows of the reduced datasets
+cat("\nFirst few rows of movies_training_reduced:\n")
+print(head(movies_training_reduced))
+
+cat("\nFirst few rows of movies_validation_reduced:\n")
+print(head(movies_validation_reduced))
+```
+
+
+b: Build a Naive Bayes classifier
+```{r}
+movies_train_nb <- naiveBayes(Awards ~ Distribution + runtime_bins + critic_bins + boxoffice_bins, data = movies_training_reduced)
+movies_train_nb
+```
+
+c. confusion matrix
+```{r}
+movies_train_pre <- predict(movies_train_nb, movies_training_reduced)
+movies_valid_pre <- predict(movies_train_nb, movies_validation_reduced)
+
+confusionMatrix(movies_training_reduced$Awards, movies_train_pre)
+confusionMatrix(movies_validation_reduced$Awards, movies_valid_pre)
+
+confusionMatrix(movies_training_reduced$Awards, movies_train_pre)$overall[1]
+confusionMatrix(movies_validation_reduced$Awards, movies_valid_pre)$overall[1]
+```
+The accuracy of the validation is 0.7413127 and the accuracy of the training data is 0.7375193. The accuracy is actually quite similar between the two data sets.
+
+
+STEP 7: NAIVE RULE vs. NAIVE BAYES
+The naive rule does not use probability to determine the prediction. It looks at the entire data set, determines the frequency of each category, and selects the most frequent category among the observed data. I'll find the accuracy of the naive rule.
+
+a. Predict Count
+```{r}
+movies_train_nb$apriori
+```
+There are more awards won than not won, so the naive rule would predict that all movies have won awards.
+
+b. Predict Percentage
+```{r}
+naive_accuracy <- table(movies_training_reduced$Awards)["Won Awards"]/n_train
+naive_accuracy
+```
+
+The accuracy of the naive method is 0.5923829, which is much lower than the accuracy of the Naive Bayes method we calculated above.
+
+STEP 8: SELECT A MOVIE AND TEST IT'
+
+a. Select a movie
+```{r}
+movie_select_name <- "Cats & Dogs"
+movie_select <- filter(movies_training_reduced, Title == movie_select_name)
+movie_select
+```
+The movie won awards. Now we predict whether the Naive Bayes model predicts it will win awards.
+
+b. Predict the selected Movie
+```{r}
+predict(movies_train_nb, movie_select)
+```
+
+The Naive Bayes method predicts that the movie Won Awards
+
+c. Probability of the Predict
+```{r}
+predict(movies_train_nb, movie_select, type = "raw")
+```
+The probability that our movie Won Awards is 0.8796068. This is larger than 0.5, so the model predicted the Won Awards group
+
+
+d. Calculate the Naive Bayes Probabilities manually
+```{r}
+conditional_prob_awards <- movies_train_nb$tables$Distribution["Won Awards",movie_select$Distribution]*
+  movies_train_nb$tables$runtime_bins["Won Awards",movie_select$runtime_bins]*
+  movies_train_nb$tables$critic_bins["Won Awards",movie_select$critic_bins]*
+  movies_train_nb$tables$boxoffice_bins["Won Awards",movie_select$boxoffice_bins]
+
+conditional_prob_noawards <- movies_train_nb$tables$Distribution["No Awards",movie_select$Distribution]*
+  movies_train_nb$tables$runtime_bins["No Awards",movie_select$runtime_bins]*
+  movies_train_nb$tables$critic_bins["No Awards",movie_select$critic_bins]*
+  movies_train_nb$tables$boxoffice_bins["No Awards",movie_select$boxoffice_bins]
+
+prior_prob_awards <- prop.table(movies_train_nb$apriori)["Won Awards"]
+prior_prob_noawards <- prop.table(movies_train_nb$apriori)["No Awards"]
+
+bayes_prob_awards <- conditional_prob_awards*prior_prob_awards/(
+  conditional_prob_awards*prior_prob_awards+conditional_prob_noawards*prior_prob_noawards
+)
+bayes_prob_noawards <- conditional_prob_noawards*prior_prob_noawards/(
+  conditional_prob_awards*prior_prob_awards+conditional_prob_noawards*prior_prob_noawards
+)
+
+bayes_prob_awards
+bayes_prob_noawards
+```
+The calculations above match exactly what was calculated by the predict function.
+
+
+
+
+
+
